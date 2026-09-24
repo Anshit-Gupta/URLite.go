@@ -6,6 +6,7 @@ import(
 	"encoding/json"
 	"math/rand" 
 	"strings"
+	"net/url"
 )
 
 
@@ -14,7 +15,7 @@ import(
 //invisible to the json
 
 
-type URL struct{
+type getURL struct{
 	LongUrl string 
 	ShortUrl string
 }
@@ -37,8 +38,8 @@ func generateShortCode()string{
 //create and return shorturl : input : long output : short  + readjson & return json
 
 func createShortURL(w http.ResponseWriter , r *http.Request){
-	var url URL 
-	err:=json.NewDecoder(r.Body).Decode(&url)
+	var Url getURL 
+	err:=json.NewDecoder(r.Body).Decode(&Url)
 	if err!=nil{
 		fmt.Fprintf(w,"error in decoding url")
 		return 
@@ -51,10 +52,10 @@ func createShortURL(w http.ResponseWriter , r *http.Request){
 		code = generateShortCode()
 	}
 	//update hasmap 
-	urldata[code]=url.LongUrl 
+	urldata[code]=Url.LongUrl 
 
 	//return the json with shorturl 
-	shortURL:=fmt.Sprintf("https://localhost:8080/%v",code)
+	shortURL:=fmt.Sprintf("http://localhost:8080/%v",code)
     
 	json.NewEncoder(w).Encode(shortURL) 
 	
@@ -64,13 +65,31 @@ func createShortURL(w http.ResponseWriter , r *http.Request){
 //func to redirect : input:short output :long   + read and return json 
 
 func redirect(w http.ResponseWriter , r *http.Request){
-   var url URL 
-   err:=json.NewDecoder(r.Body).Decode(&url) 
+	//get the long url 
+   var Url getURL 
+   err:=json.NewDecoder(r.Body).Decode(&Url) 
    if err!=nil{
 		fmt.Fprintf(w,"error in decoding url")
 		return 
 	}
-
+	//get the code from the url 
+	u,err:=url.Parse(Url.ShortUrl)
+	if err != nil {
+		fmt.Fprintf(w,"error in getting code ")
+		return
+	}
+	code:=strings.TrimPrefix(u.Path,"/")
+    
+	//check if code exist in map 
+	 _,exists :=urldata[code]
+	if !exists{
+		fmt.Fprintf(w,"invalid shorturl ")
+		return
+	}
+    
+	//send map 
+  
+   	json.NewEncoder(w).Encode(urldata[code]) 
 
 }
 
