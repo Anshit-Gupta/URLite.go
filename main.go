@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool" //pgx
+	"github.com/joho/godotenv"        //env
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
-	"sync"
 )
 
 //json respones : we use struct , then encode it using encoding/json
@@ -18,15 +21,15 @@ type ShortenRequest struct {
 	LongURL string
 }
 
-//unused
+// unused
 type ShortenResposne struct {
 	ShortURL string
 }
 
-var urldata = make(map[string]string)
-var mu sync.Mutex
+// declare pool var at package level since we need to use in handlers
+var pool *pgxpool.Pool
 
-//fucn to generate shortcode
+// fucn to generate shortcode
 func generateShortCode() string {
 	var shortcode strings.Builder
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -39,8 +42,6 @@ func generateShortCode() string {
 //create and return shorturl : input : long output : short  + readjson & return json
 
 func createShortURL(w http.ResponseWriter, r *http.Request) {
-	mu.Lock()
-	defer mu.Unlock()
 
 	var Url ShortenRequest
 	err := json.NewDecoder(r.Body).Decode(&Url)
@@ -51,17 +52,13 @@ func createShortURL(w http.ResponseWriter, r *http.Request) {
 	var code string
 	code = generateShortCode()
 	//check is code is already being used or not
-	//keep generating new code if matching with already present
-	_, exists := urldata[code]
-	for exists {
-		code = generateShortCode()
 
-		_, exists = urldata[code] //re-check with the new code
-		//here its = and not := , since we are updating the same exist and not creating a new one
-	}
 	//update hasmap
-	urldata[code] = Url.LongURL
-
+	_, err = pool.Exec(r.Context(), "INSERT INTO urls (code,long_url) VALUES($1 , $2)", code, Url.LongURL)
+	if err != nil {
+		http.Error(w, "Error updating the db , try again ", 400)
+		return
+	}
 	//return the json with shorturl
 	shorturl := fmt.Sprintf("http://localhost:8080/%v", code)
 
@@ -72,8 +69,6 @@ func createShortURL(w http.ResponseWriter, r *http.Request) {
 //func to redirect
 
 func redirect(w http.ResponseWriter, r *http.Request) {
-	mu.Lock()
-	defer mu.Unlock()
 
 	//get the code from the short url clicked
 	u, err := url.Parse(r.URL.Path)
@@ -84,23 +79,40 @@ func redirect(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimPrefix(u.Path, "/")
 
 	//check if code exist in map
-	_, exists := urldata[code]
-	if !exists {
+	var longURL string
+	err = pool.QueryRow(r.Context(), "SELECT long_url FROM urls WHERE code = $1", code).Scan(&longURL)
+	if err != nil {
 		http.Error(w, "Error : code not found", http.StatusNotFound)
 		return
 	}
 
-	//send map
-
-	http.Redirect(w, r, urldata[code], http.StatusFound)
+	http.Redirect(w, r, longURL, http.StatusFound)
 
 }
 
 func main() {
+	//create a connection pool
+	godotenv.Load()
+	databaseURL := os.Getenv("DATABASE_URL")
+	ctx := context.Background()
+	var err error
+	pool, err = pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		fmt.Println("error creating database pool", err)
+		return
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		fmt.Println("error connecting to database:", err)
+		return
+	}
+
+	fmt.Println("database connection sucessful")
+
 	http.HandleFunc("/createShortURL", createShortURL)
 	http.HandleFunc("/", redirect)
 	fmt.Println("server started at localhost 8080 ")
-	err := http.ListenAndServe(":8080", nil) //this returns just a error and not usual res,err
+	err = http.ListenAndServe(":8080", nil) //this returns just a error and not usual res,err
 	if err != nil {
 		fmt.Println("error starting the server at 8080 ", err)
 	}
